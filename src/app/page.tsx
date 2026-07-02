@@ -155,6 +155,7 @@ const compactNumber = new Intl.NumberFormat("en-US", {
 });
 
 const importedRowsStorageKey = "trade-confluence:imported-rows";
+const allFlowTickersValue = "__ALL_TICKERS__";
 
 export default function Home() {
   const initialQuery = getInitialQueryState();
@@ -187,7 +188,7 @@ export default function Home() {
   const [flowAlerts, setFlowAlerts] = useState<FlowAlert[]>([]);
   const [flowConnected, setFlowConnected] = useState(false);
   const [flowError, setFlowError] = useState("");
-  const [flowTickerFilter, setFlowTickerFilter] = useState("All");
+  const [flowTickerFilter, setFlowTickerFilter] = useState(allFlowTickersValue);
   const [flowSideFilter, setFlowSideFilter] = useState<"ALL" | "CALL" | "PUT">("ALL");
   const [flowTradeableOnly, setFlowTradeableOnly] = useState(true);
   const [flowMinPremium, setFlowMinPremium] = useState(0);
@@ -338,7 +339,7 @@ export default function Home() {
   );
 
   const flowTickerOptions = useMemo(
-    () => ["All", ...Array.from(tradeableTickerSet).sort()],
+    () => Array.from(tradeableTickerSet).sort(),
     [tradeableTickerSet],
   );
 
@@ -346,7 +347,7 @@ export default function Home() {
     return flowAlerts
       .filter((alert) => {
         if (flowTradeableOnly && !tradeableTickerSet.has(alert.ticker)) return false;
-        if (flowTickerFilter !== "All" && alert.ticker !== flowTickerFilter) return false;
+        if (flowTickerFilter !== allFlowTickersValue && alert.ticker !== flowTickerFilter) return false;
         if (flowSideFilter !== "ALL" && alert.side !== flowSideFilter) return false;
         if ((alert.premium ?? 0) < flowMinPremium) return false;
         return true;
@@ -842,7 +843,8 @@ export default function Home() {
             <div className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">
               <div className="grid gap-3 lg:grid-cols-[160px_160px_1fr_auto] lg:items-center">
                 <select className="h-10 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" value={flowTickerFilter} onChange={(event) => setFlowTickerFilter(event.target.value)}>
-                  {flowTickerOptions.map((item) => <option key={item}>{item}</option>)}
+                  <option value={allFlowTickersValue}>All tickers</option>
+                  {flowTickerOptions.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
                 <select className="h-10 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" value={flowSideFilter} onChange={(event) => setFlowSideFilter(event.target.value as "ALL" | "CALL" | "PUT")}>
                   <option value="ALL">Calls and puts</option>
@@ -873,6 +875,9 @@ export default function Home() {
                   </button>
                 </div>
               </div>
+              <p className="mt-3 text-xs text-[#66706a]">
+                The stream is live-only. It shows alerts as Bullflow emits them; heartbeats keep the connection open but do not create table rows.
+              </p>
             </div>
             {(flowDebugCurl || flowDebugError) && (
               <details className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">

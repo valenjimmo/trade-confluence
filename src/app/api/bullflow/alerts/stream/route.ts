@@ -117,17 +117,19 @@ function normalizeAlert(value: unknown): NormalizedAlert {
       record.symbol ??
       "",
   );
-  const ticker = String(
-    record.ticker ??
-      record.underlying ??
-      record.root ??
-      parseUnderlying(optionSymbol) ??
-      "",
-  ).toUpperCase();
-  const side = readSide(record, optionSymbol);
+  const parsedOption = parseOptionSymbol(optionSymbol);
+  const ticker = readTicker(record, optionSymbol, parsedOption);
+  const side = readSide(record, optionSymbol, parsedOption);
   const premium = readNumber(record.premium ?? record.total_premium ?? record.cost_basis ?? record.value);
   const price = readNumber(record.price ?? record.trade_price ?? record.option_price);
   const size = readNumber(record.size ?? record.volume ?? record.contracts);
+  const expiration = String(
+    record.expiration ??
+      record.expiry ??
+      record.expiration_date ??
+      parsedOption?.expiration ??
+      "",
+  );
 
   return {
     id: String(record.id ?? record.uuid ?? `${ticker}-${optionSymbol}-${record.timestamp ?? Date.now()}`),
@@ -136,9 +138,9 @@ function normalizeAlert(value: unknown): NormalizedAlert {
     optionSymbol,
     side,
     sentiment: readSentiment(record, side),
-    strike: readNumber(record.strike),
-    expiration: String(record.expiration ?? record.expiry ?? record.expiration_date ?? ""),
-    dte: readNumber(record.dte ?? record.days_to_expiration),
+    strike: readNumber(record.strike) ?? parsedOption?.strike ?? null,
+    expiration,
+    dte: readNumber(record.dte ?? record.days_to_expiration) ?? readDte(expiration),
     premium,
     price,
     size,
@@ -146,10 +148,28 @@ function normalizeAlert(value: unknown): NormalizedAlert {
   };
 }
 
-function readSide(record: Record<string, unknown>, optionSymbol: string): NormalizedAlert["side"] {
+function readTicker(
+  record: Record<string, unknown>,
+  optionSymbol: string,
+  parsedOption: ParsedOption | null,
+) {
+  const explicitTicker = record.ticker ?? record.underlying ?? record.root;
+  if (explicitTicker && !looksLikeOptionSymbol(String(explicitTicker))) {
+    return String(explicitTicker).toUpperCase();
+  }
+
+  return (parsedOption?.ticker ?? parseUnderlying(optionSymbol) ?? "").toUpperCase();
+}
+
+function readSide(
+  record: Record<string, unknown>,
+  optionSymbol: string,
+  parsedOption: ParsedOption | null,
+): NormalizedAlert["side"] {
   const value = String(record.side ?? record.option_type ?? record.put_call ?? record.call_put ?? "").toUpperCase();
   if (value.includes("CALL") || value === "C") return "CALL";
   if (value.includes("PUT") || value === "P") return "PUT";
+  if (parsedOption?.side) return parsedOption.side;
   if (/C\d{8,}/.test(optionSymbol)) return "CALL";
   if (/P\d{8,}/.test(optionSymbol)) return "PUT";
   return "UNKNOWN";
@@ -165,8 +185,52 @@ function readSentiment(record: Record<string, unknown>, side: NormalizedAlert["s
 }
 
 function parseUnderlying(optionSymbol: string) {
-  const match = optionSymbol.match(/^([A-Z]{1,6})/);
+  const normalized = normalizeOptionSymbol(optionSymbol);
+  const match = normalized.match(/^([A-Z]{1,6})(?=\d{6}[CP]\d{8})/) ?? normalized.match(/^([A-Z]{1,6})/);
   return match?.[1] ?? null;
+}
+
+type ParsedOption = {
+  ticker: string;
+  expiration: string;
+  side: "CALL" | "PUT";
+  strike: number;
+};
+
+function parseOptionSymbol(optionSymbol: string): ParsedOption | null {
+  const normalized = normalizeOptionSymbol(optionSymbol);
+  const match = normalized.match(/^([A-Z]{1,6})(\d{6})([CP])(\d{8})$/);
+  if (!match) return null;
+
+  const [, ticker, yymmdd, side, strikeText] = match;
+  const year = 2000 + Number(yymmdd.slice(0, 2));
+  const month = yymmdd.slice(2, 4);
+  const day = yymmdd.slice(4, 6);
+
+  return {
+    ticker,
+    expiration: `${year}-${month}-${day}`,
+    side: side === "C" ? "CALL" : "PUT",
+    strike: Number(strikeText) / 1000,
+  };
+}
+
+function normalizeOptionSymbol(optionSymbol: string) {
+  return optionSymbol.toUpperCase().replace(/^O:/, "").replace(/\s+/g, "");
+}
+
+function looksLikeOptionSymbol(value: string) {
+  return Boolean(parseOptionSymbol(value));
+}
+
+function readDte(expiration: string) {
+  if (!expiration) return null;
+  const expiry = new Date(`${expiration}T00:00:00Z`);
+  if (Number.isNaN(expiry.getTime())) return null;
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const expiryUtc = Date.UTC(expiry.getUTCFullYear(), expiry.getUTCMonth(), expiry.getUTCDate());
+  return Math.max(0, Math.round((expiryUtc - todayUtc) / 86400000));
 }
 
 function readNumber(value: unknown) {
