@@ -191,6 +191,8 @@ export default function Home() {
   const [flowSideFilter, setFlowSideFilter] = useState<"ALL" | "CALL" | "PUT">("ALL");
   const [flowTradeableOnly, setFlowTradeableOnly] = useState(true);
   const [flowMinPremium, setFlowMinPremium] = useState(0);
+  const [flowDebugCurl, setFlowDebugCurl] = useState("");
+  const [flowDebugError, setFlowDebugError] = useState("");
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -461,6 +463,7 @@ export default function Home() {
   function startFlowStream() {
     stopFlowStream();
     setFlowError("");
+    void loadFlowDebugCurl();
 
     const tickers = flowTradeableOnly ? Array.from(tradeableTickerSet).join(",") : "";
     const params = new URLSearchParams();
@@ -489,7 +492,7 @@ export default function Home() {
 
     source.onerror = () => {
       setFlowConnected(false);
-      setFlowError("Flow stream disconnected. Check BULLFLOW_API_KEY or reconnect.");
+      setFlowError("Flow stream disconnected. Reconnect, or open /api/bullflow/alerts/probe to verify Vercel can reach Bullflow.");
       source.close();
       if (flowSourceRef.current === source) flowSourceRef.current = null;
     };
@@ -499,6 +502,21 @@ export default function Home() {
     flowSourceRef.current?.close();
     flowSourceRef.current = null;
     setFlowConnected(false);
+  }
+
+  async function loadFlowDebugCurl() {
+    setFlowDebugCurl("");
+    setFlowDebugError("");
+
+    try {
+      const response = await fetch("/api/bullflow/alerts/curl", { cache: "no-store" });
+      const data = await response.json();
+      if (!data.enabled) return;
+      if (!response.ok) throw new Error(data.error ?? "Unable to load debug curl command.");
+      setFlowDebugCurl(String(data.curl ?? ""));
+    } catch (error) {
+      setFlowDebugError(error instanceof Error ? error.message : "Unable to load debug curl command.");
+    }
   }
 
   async function signInWithGoogle() {
@@ -856,6 +874,18 @@ export default function Home() {
                 </div>
               </div>
             </div>
+            {(flowDebugCurl || flowDebugError) && (
+              <details className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">
+                <summary className="cursor-pointer text-sm font-bold">Bullflow debug curl</summary>
+                {flowDebugError ? (
+                  <p className="mt-3 text-sm font-medium text-[#a33d2f]">{flowDebugError}</p>
+                ) : (
+                  <pre className="mt-3 overflow-x-auto rounded-md bg-[#1f2933] p-3 text-xs text-white">
+                    <code>{flowDebugCurl}</code>
+                  </pre>
+                )}
+              </details>
+            )}
             {flowError && <p className="rounded-md border border-[#e0b5aa] bg-[#fff4f1] px-3 py-2 text-sm font-medium text-[#a33d2f]">{flowError}</p>}
             <div className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7]">
               <table className="w-full table-fixed text-left text-sm">
