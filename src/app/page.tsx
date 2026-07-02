@@ -689,12 +689,7 @@ export default function Home() {
 }
 
 function flattenImport(payload: unknown): TickerSummary[] {
-  const root = payload as { trade_context?: Record<string, unknown[]> };
-  const groups = root.trade_context;
-  if (!groups || typeof groups !== "object") return [];
-
-  return Object.values(groups)
-    .flat()
+  return extractImportEntries(payload)
     .map((entry) => {
       const item = asRecord(entry);
       const qualification = asRecord(item.qualification);
@@ -720,6 +715,19 @@ function flattenImport(payload: unknown): TickerSummary[] {
       };
     })
     .filter((row) => row.ticker);
+}
+
+function extractImportEntries(payload: unknown): unknown[] {
+  const root = asRecord(payload);
+  if (Array.isArray(root.tickers)) return root.tickers;
+
+  const groups = asRecord(root.trade_context);
+  return Object.values(groups).flatMap((group) => {
+    if (Array.isArray(group)) return group;
+
+    const nested = asRecord(group);
+    return Object.values(nested).flatMap((value) => (Array.isArray(value) ? value : []));
+  });
 }
 
 function getInitialQueryState(): { tab: ActiveTab; ticker: string } {
