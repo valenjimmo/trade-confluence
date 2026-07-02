@@ -47,22 +47,39 @@ async function fetchBullflow(endpoint: string, ticker: string, apiKey: string) {
   url.searchParams.set("ticker", ticker);
   url.searchParams.set("symbol", ticker);
   url.searchParams.set("key", apiKey);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
 
-  const payload = await response.json().catch(() => ({}));
-  return {
-    ok: response.ok,
-    status: response.status,
-    payload,
-    error: asRecord(payload).error ? String(asRecord(payload).error) : undefined,
-  };
+    const payload = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok,
+      status: response.status,
+      payload,
+      error: readError(payload) ?? (response.ok ? undefined : `Bullflow returned HTTP ${response.status}.`),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 504,
+      payload: {},
+      error:
+        error instanceof Error && error.name === "AbortError"
+          ? "Bullflow GEX/VEX request timed out after 12 seconds."
+          : "Bullflow GEX/VEX request failed before a response was received.",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function mergeExposureRows(gexPayload: unknown, vexPayload: unknown) {
@@ -101,6 +118,11 @@ function readCurrentPrice(payload: unknown) {
   const record = asRecord(payload);
   const price = Number(record.currentPrice ?? record.current_price ?? record.price);
   return Number.isFinite(price) ? price : null;
+}
+
+function readError(payload: unknown) {
+  const record = asRecord(payload);
+  return record.error || record.message ? String(record.error ?? record.message) : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

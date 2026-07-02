@@ -164,10 +164,19 @@ export default function Home() {
   const [selectedRow, setSelectedRow] = useState<TickerSummary | null>(sampleRows[0]);
   const [importName, setImportName] = useState("Sample import");
   const [importError, setImportError] = useState("");
-  const [tradeableOnly, setTradeableOnly] = useState(true);
-  const [sector, setSector] = useState("All");
-  const [stage, setStage] = useState("All");
-  const [minScore, setMinScore] = useState(0);
+  const [tickerQuery, setTickerQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"All" | Status>("TRADEABLE");
+  const [sectorFilter, setSectorFilter] = useState("All");
+  const [stageFilter, setStageFilter] = useState("All");
+  const [trendFilter, setTrendFilter] = useState("All");
+  const [flowBiasFilter, setFlowBiasFilter] = useState("All");
+  const [minScore, setMinScore] = useState("");
+  const [maxScore, setMaxScore] = useState("");
+  const [minRs, setMinRs] = useState("");
+  const [maxRs, setMaxRs] = useState("");
+  const [minRelVolume, setMinRelVolume] = useState("");
+  const [minPctFromHigh, setMinPctFromHigh] = useState("");
+  const [maxPctFromHigh, setMaxPctFromHigh] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [gexMetric, setGexMetric] = useState<"netGex" | "netVex">("netGex");
@@ -246,12 +255,31 @@ export default function Home() {
     [rows],
   );
 
+  const trends = useMemo(
+    () => ["All", ...Array.from(new Set(rows.map((row) => row.trend).filter(Boolean))).sort()],
+    [rows],
+  );
+
+  const flowBiases = useMemo(
+    () => ["All", ...Array.from(new Set(rows.map((row) => row.flowBias).filter(Boolean))).sort()],
+    [rows],
+  );
+
   const filteredRows = useMemo(() => {
     const normalized = [...rows].filter((row) => {
-      if (tradeableOnly && row.status !== "TRADEABLE") return false;
-      if (sector !== "All" && row.sector !== sector) return false;
-      if (stage !== "All" && row.stage !== stage) return false;
-      if (row.score < minScore) return false;
+      if (tickerQuery && !row.ticker.includes(tickerQuery.toUpperCase())) return false;
+      if (statusFilter !== "All" && row.status !== statusFilter) return false;
+      if (sectorFilter !== "All" && row.sector !== sectorFilter) return false;
+      if (stageFilter !== "All" && row.stage !== stageFilter) return false;
+      if (trendFilter !== "All" && row.trend !== trendFilter) return false;
+      if (flowBiasFilter !== "All" && row.flowBias !== flowBiasFilter) return false;
+      if (!passesMin(row.score, minScore)) return false;
+      if (!passesMax(row.score, maxScore)) return false;
+      if (!passesMin(row.rsRank, minRs)) return false;
+      if (!passesMax(row.rsRank, maxRs)) return false;
+      if (!passesMin(row.relVolume, minRelVolume)) return false;
+      if (!passesMin(row.pctFromHigh, minPctFromHigh)) return false;
+      if (!passesMax(row.pctFromHigh, maxPctFromHigh)) return false;
       return true;
     });
 
@@ -266,7 +294,24 @@ export default function Home() {
     });
 
     return normalized;
-  }, [rows, tradeableOnly, sector, stage, minScore, sortKey, sortDir]);
+  }, [
+    rows,
+    tickerQuery,
+    statusFilter,
+    sectorFilter,
+    stageFilter,
+    trendFilter,
+    flowBiasFilter,
+    minScore,
+    maxScore,
+    minRs,
+    maxRs,
+    minRelVolume,
+    minPctFromHigh,
+    maxPctFromHigh,
+    sortKey,
+    sortDir,
+  ]);
 
   const sparklineData = useMemo(() => {
     if (!selectedRow) return [];
@@ -363,19 +408,52 @@ export default function Home() {
     setSortDir("desc");
   }
 
+  function clearListFilters() {
+    setTickerQuery("");
+    setStatusFilter("All");
+    setSectorFilter("All");
+    setStageFilter("All");
+    setTrendFilter("All");
+    setFlowBiasFilter("All");
+    setMinScore("");
+    setMaxScore("");
+    setMinRs("");
+    setMaxRs("");
+    setMinRelVolume("");
+    setMinPctFromHigh("");
+    setMaxPctFromHigh("");
+  }
+
   async function fetchGex() {
     setGexLoading(true);
     setGexError("");
+    setGexRows([]);
+    setGexPrice(null);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const response = await fetch(`/api/bullflow/gex-vex?ticker=${encodeURIComponent(selectedTicker)}`);
+      const response = await fetch(`/api/bullflow/gex-vex?ticker=${encodeURIComponent(selectedTicker)}`, {
+        signal: controller.signal,
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Unable to load GEX/VEX data.");
-      setGexRows(data.rows);
+      const nextRows = Array.isArray(data.rows) ? data.rows : [];
+      setGexRows(nextRows);
       setGexPrice(data.currentPrice ?? null);
+      if (!nextRows.length) {
+        setGexError(`No GEX/VEX rows returned for ${selectedTicker}. Try another ticker or check Bullflow coverage.`);
+      }
     } catch (error) {
-      setGexError(error instanceof Error ? error.message : "Unable to load GEX/VEX data.");
+      setGexError(
+        error instanceof Error && error.name === "AbortError"
+          ? "GEX/VEX request timed out after 15 seconds."
+          : error instanceof Error
+            ? error.message
+            : "Unable to load GEX/VEX data.",
+      );
       setGexRows([]);
     } finally {
+      window.clearTimeout(timeout);
       setGexLoading(false);
     }
   }
@@ -596,30 +674,34 @@ export default function Home() {
               </section>
 
               <div className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7]">
-                <div className="flex flex-col gap-4 border-b border-[#d7d2c8] p-4 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="flex items-center gap-2 text-sm font-semibold">
-                    <Filter size={16} />
-                    Filters
+                <div className="space-y-4 border-b border-[#d7d2c8] p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <Filter size={16} />
+                      Filters
+                      <span className="text-xs font-medium text-[#66706a]">{filteredRows.length} / {rows.length}</span>
+                    </div>
+                    <button
+                      className="inline-flex h-9 items-center justify-center rounded-md border border-[#b8c1b3] bg-white px-3 text-sm font-semibold hover:bg-[#edf3ea]"
+                      onClick={clearListFilters}
+                    >
+                      Clear filters
+                    </button>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={tradeableOnly}
-                        onChange={(event) => setTradeableOnly(event.target.checked)}
-                      />
-                      TRADEABLE only
-                    </label>
-                    <select className="h-9 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" value={sector} onChange={(event) => setSector(event.target.value)}>
-                      {sectors.map((item) => <option key={item}>{item}</option>)}
-                    </select>
-                    <select className="h-9 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" value={stage} onChange={(event) => setStage(event.target.value)}>
-                      {stages.map((item) => <option key={item}>{item}</option>)}
-                    </select>
-                    <label className="flex items-center gap-2 text-sm">
-                      <span className="whitespace-nowrap">Min {minScore}</span>
-                      <input className="w-full accent-[#55705f]" type="range" min="0" max="100" value={minScore} onChange={(event) => setMinScore(Number(event.target.value))} />
-                    </label>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <FilterText label="Ticker" value={tickerQuery} onChange={setTickerQuery} placeholder="AXGN" />
+                    <FilterSelect label="Status" value={statusFilter} onChange={(value) => setStatusFilter(value as "All" | Status)} options={["All", "TRADEABLE", "NOT TRADEABLE"]} />
+                    <FilterSelect label="Sector" value={sectorFilter} onChange={setSectorFilter} options={sectors} />
+                    <FilterSelect label="Stage" value={stageFilter} onChange={setStageFilter} options={stages} />
+                    <FilterSelect label="Trend" value={trendFilter} onChange={setTrendFilter} options={trends} />
+                    <FilterSelect label="Imported flow" value={flowBiasFilter} onChange={setFlowBiasFilter} options={flowBiases} />
+                    <FilterNumber label="Score min" value={minScore} onChange={setMinScore} placeholder="80" />
+                    <FilterNumber label="Score max" value={maxScore} onChange={setMaxScore} placeholder="100" />
+                    <FilterNumber label="RS min" value={minRs} onChange={setMinRs} placeholder="80" />
+                    <FilterNumber label="RS max" value={maxRs} onChange={setMaxRs} placeholder="100" />
+                    <FilterNumber label="Vol min" value={minRelVolume} onChange={setMinRelVolume} placeholder="1.5" step="0.1" />
+                    <FilterNumber label="High min %" value={minPctFromHigh} onChange={setMinPctFromHigh} placeholder="-10" step="0.1" />
+                    <FilterNumber label="High max %" value={maxPctFromHigh} onChange={setMaxPctFromHigh} placeholder="0" step="0.1" />
                   </div>
                 </div>
                 <div>
@@ -636,7 +718,7 @@ export default function Home() {
                           ["rsRank", "RS", "hidden sm:table-cell w-[64px]"],
                           ["relVolume", "Vol", "hidden xl:table-cell w-[70px]"],
                           ["pctFromHigh", "High", "hidden 2xl:table-cell w-[82px]"],
-                          ["flowBias", "Flow", "hidden lg:table-cell w-[92px]"],
+                          ["flowBias", "Imported Flow", "hidden lg:table-cell w-[120px]"],
                         ].map(([key, label, className]) => (
                           <th key={key} className={`px-3 py-3 ${className}`}>
                             <button className="inline-flex items-center gap-1 font-semibold" onClick={() => updateSort(key as SortKey)}>
@@ -695,21 +777,27 @@ export default function Home() {
             {gexError && <p className="rounded-md border border-[#e0b5aa] bg-[#fff4f1] px-3 py-2 text-sm font-medium text-[#a33d2f]">{gexError}</p>}
             <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
               <div className="h-[480px] rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={gexRows} margin={{ left: 8, right: 18, top: 20, bottom: 20 }}>
-                    <CartesianGrid stroke="#e4ded3" vertical={false} />
-                    <XAxis dataKey="strike" />
-                    <YAxis />
-                    <Tooltip />
-                    <ReferenceLine y={0} stroke="#1f2933" />
-                    {gexPrice && <ReferenceLine x={gexPrice} stroke="#b76742" label="Price" />}
-                    <Bar dataKey={gexMetric}>
-                      {gexRows.map((row) => (
-                        <Cell key={row.strike} fill={row[gexMetric] >= 0 ? "#55705f" : "#b76742"} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                {gexRows.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={gexRows} margin={{ left: 8, right: 18, top: 20, bottom: 20 }}>
+                      <CartesianGrid stroke="#e4ded3" vertical={false} />
+                      <XAxis dataKey="strike" />
+                      <YAxis />
+                      <Tooltip />
+                      <ReferenceLine y={0} stroke="#1f2933" />
+                      {gexPrice && <ReferenceLine x={gexPrice} stroke="#b76742" label="Price" />}
+                      <Bar dataKey={gexMetric}>
+                        {gexRows.map((row) => (
+                          <Cell key={row.strike} fill={row[gexMetric] >= 0 ? "#55705f" : "#b76742"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-center text-sm text-[#66706a]">
+                    {gexLoading ? "Fetching Bullflow exposure data..." : "Fetch a ticker map to populate the chart."}
+                  </div>
+                )}
               </div>
               <div className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">
                 <h2 className="text-base font-bold">Auto labels</h2>
@@ -927,6 +1015,22 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function parseFilterNumber(value: string) {
+  if (!value.trim()) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function passesMin(actual: number, filter: string) {
+  const minimum = parseFilterNumber(filter);
+  return minimum === null || actual >= minimum;
+}
+
+function passesMax(actual: number, filter: string) {
+  const maximum = parseFilterNumber(filter);
+  return maximum === null || actual <= maximum;
+}
+
 function normalizePercentValue(value: unknown) {
   const numeric = Number(value ?? 0);
   if (!Number.isFinite(numeric)) return 0;
@@ -1031,6 +1135,85 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
       {icon}
       {label}
     </button>
+  );
+}
+
+function FilterText({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="grid gap-1 text-xs font-semibold uppercase text-[#66706a]">
+      {label}
+      <input
+        className="h-9 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm font-medium normal-case text-[#1f2933]"
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value.toUpperCase())}
+      />
+    </label>
+  );
+}
+
+function FilterNumber({
+  label,
+  value,
+  onChange,
+  placeholder,
+  step = "1",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  step?: string;
+}) {
+  return (
+    <label className="grid gap-1 text-xs font-semibold uppercase text-[#66706a]">
+      {label}
+      <input
+        className="h-9 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm font-medium normal-case text-[#1f2933]"
+        type="number"
+        step={step}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+}) {
+  return (
+    <label className="grid gap-1 text-xs font-semibold uppercase text-[#66706a]">
+      {label}
+      <select
+        className="h-9 min-w-0 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm font-medium normal-case text-[#1f2933]"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 
