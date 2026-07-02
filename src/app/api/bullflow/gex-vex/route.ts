@@ -86,22 +86,24 @@ function mergeExposureRows(gexPayload: unknown, vexPayload: unknown) {
   const byStrike = new Map<number, { strike: number; netGex: number; netVex: number }>();
 
   for (const row of readRows(gexPayload)) {
-    const strike = Number(row.strike);
+    const strike = readStrike(row);
     if (!Number.isFinite(strike)) continue;
+    const existing = byStrike.get(strike);
     byStrike.set(strike, {
       strike,
-      netGex: Number(row.netGex ?? row.net_gex ?? row.gex ?? row.net ?? 0),
-      netVex: byStrike.get(strike)?.netVex ?? 0,
+      netGex: (existing?.netGex ?? 0) + readExposure(row, "gex"),
+      netVex: existing?.netVex ?? 0,
     });
   }
 
   for (const row of readRows(vexPayload)) {
-    const strike = Number(row.strike);
+    const strike = readStrike(row);
     if (!Number.isFinite(strike)) continue;
+    const existing = byStrike.get(strike);
     byStrike.set(strike, {
       strike,
-      netGex: byStrike.get(strike)?.netGex ?? 0,
-      netVex: Number(row.netVex ?? row.net_vex ?? row.vex ?? row.net ?? 0),
+      netGex: existing?.netGex ?? 0,
+      netVex: (existing?.netVex ?? 0) + readExposure(row, "vex"),
     });
   }
 
@@ -109,9 +111,54 @@ function mergeExposureRows(gexPayload: unknown, vexPayload: unknown) {
 }
 
 function readRows(payload: unknown): Record<string, unknown>[] {
-  const record = asRecord(payload);
-  const rows = record.rows ?? record.data ?? record.results;
-  return Array.isArray(rows) ? rows.map(asRecord) : [];
+  const rows: Record<string, unknown>[] = [];
+  collectStrikeRows(payload, rows);
+  return rows;
+}
+
+function collectStrikeRows(value: unknown, rows: Record<string, unknown>[]) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectStrikeRows(item, rows);
+    return;
+  }
+
+  const record = asRecord(value);
+  if (!Object.keys(record).length) return;
+
+  if (Number.isFinite(readStrike(record))) {
+    rows.push(record);
+  }
+
+  for (const nested of Object.values(record)) {
+    if (nested && typeof nested === "object") collectStrikeRows(nested, rows);
+  }
+}
+
+function readStrike(row: Record<string, unknown>) {
+  return readNumber(row.strike ?? row.strike_price ?? row.strikePrice);
+}
+
+function readExposure(row: Record<string, unknown>, metric: "gex" | "vex") {
+  const keys =
+    metric === "gex"
+      ? ["netGex", "net_gex", "netGammaExposure", "net_gamma_exposure", "gex", "gamma_exposure", "net"]
+      : ["netVex", "net_vex", "netVannaExposure", "net_vanna_exposure", "vex", "vanna_exposure", "net"];
+
+  for (const key of keys) {
+    const value = readNumber(row[key]);
+    if (Number.isFinite(value)) return value;
+  }
+
+  const call = readNumber(row.call ?? row.call_gex ?? row.callGex ?? row.call_vex ?? row.callVex);
+  const put = readNumber(row.put ?? row.put_gex ?? row.putGex ?? row.put_vex ?? row.putVex);
+  if (Number.isFinite(call) || Number.isFinite(put)) return (call || 0) + (put || 0);
+
+  return 0;
+}
+
+function readNumber(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : Number.NaN;
 }
 
 function readCurrentPrice(payload: unknown) {
