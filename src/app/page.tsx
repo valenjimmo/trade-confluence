@@ -462,7 +462,7 @@ export default function Home() {
     stopFlowStream();
     setFlowError("");
 
-    const tickers = Array.from(tradeableTickerSet).join(",");
+    const tickers = flowTradeableOnly ? Array.from(tradeableTickerSet).join(",") : "";
     const params = new URLSearchParams();
     if (tickers) params.set("tickers", tickers);
 

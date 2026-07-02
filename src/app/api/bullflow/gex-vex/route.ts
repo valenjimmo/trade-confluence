@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 
+type BullflowResult = {
+  ok: boolean;
+  status: number;
+  payload: unknown;
+  error?: string;
+};
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const ticker = searchParams.get("ticker")?.toUpperCase();
@@ -32,6 +39,23 @@ export async function GET(request: Request) {
 
   const rows = mergeExposureRows(gexResponse.payload, vexResponse.payload);
 
+  if (!rows.length) {
+    return NextResponse.json({
+      ticker,
+      currentPrice:
+        readCurrentPrice(gexResponse.payload) ??
+        readCurrentPrice(vexResponse.payload) ??
+        null,
+      rows,
+      diagnostics: {
+        netgexTopLevelKeys: Object.keys(asRecord(gexResponse.payload)).slice(0, 12),
+        netvexTopLevelKeys: Object.keys(asRecord(vexResponse.payload)).slice(0, 12),
+        netgexStrikeRows: readRows(gexResponse.payload).length,
+        netvexStrikeRows: readRows(vexResponse.payload).length,
+      },
+    });
+  }
+
   return NextResponse.json({
     ticker,
     currentPrice:
@@ -43,9 +67,31 @@ export async function GET(request: Request) {
 }
 
 async function fetchBullflow(endpoint: string, ticker: string, apiKey: string) {
+  const attempts = [
+    { param: "ticker", value: ticker },
+    { param: "symbol", value: ticker },
+    { param: "underlying", value: ticker },
+  ];
+
+  let lastFailure: BullflowResult = {
+    ok: false,
+    status: 500,
+    payload: {},
+    error: "Bullflow GEX/VEX request failed.",
+  };
+
+  for (const attempt of attempts) {
+    const result = await fetchBullflowAttempt(endpoint, apiKey, attempt.param, attempt.value);
+    if (result.ok) return result;
+    lastFailure = result;
+  }
+
+  return lastFailure;
+}
+
+async function fetchBullflowAttempt(endpoint: string, apiKey: string, param: string, ticker: string) {
   const url = new URL(endpoint);
-  url.searchParams.set("ticker", ticker);
-  url.searchParams.set("symbol", ticker);
+  url.searchParams.set(param, ticker);
   url.searchParams.set("key", apiKey);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12000);
@@ -65,7 +111,7 @@ async function fetchBullflow(endpoint: string, ticker: string, apiKey: string) {
       ok: response.ok,
       status: response.status,
       payload,
-      error: readError(payload) ?? (response.ok ? undefined : `Bullflow returned HTTP ${response.status}.`),
+      error: readError(payload) ?? (response.ok ? undefined : `Bullflow returned HTTP ${response.status} using ${param}=...`),
     };
   } catch (error) {
     return {
