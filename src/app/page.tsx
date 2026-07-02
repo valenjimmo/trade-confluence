@@ -143,6 +143,10 @@ const percent = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
 });
 
+const compactNumber = new Intl.NumberFormat("en-US", {
+  maximumFractionDigits: 1,
+});
+
 const importedRowsStorageKey = "trade-confluence:imported-rows";
 
 export default function Home() {
@@ -481,7 +485,7 @@ export default function Home() {
                       <div className="grid grid-cols-2 gap-2 text-sm">
                         <MiniStat label="Price" value={currency.format(selectedRow.price)} />
                         <MiniStat label="Score" value={selectedRow.score.toString()} />
-                        <MiniStat label="RS rank" value={selectedRow.rsRank.toString()} />
+                        <MiniStat label="RS rank" value={formatRsRank(selectedRow.rsRank)} />
                         <MiniStat label="Flow bias" value={selectedRow.flowBias} />
                       </div>
                     </div>
@@ -558,8 +562,8 @@ export default function Home() {
                           ["status", "Status", "hidden md:table-cell w-[116px]"],
                           ["stage", "Stage", "hidden lg:table-cell w-[72px]"],
                           ["trend", "Trend", "hidden xl:table-cell w-[106px]"],
-                          ["rsRank", "RS", "hidden sm:table-cell w-[72px]"],
-                          ["relVolume", "Vol", "hidden xl:table-cell w-[74px]"],
+                          ["rsRank", "RS", "hidden sm:table-cell w-[64px]"],
+                          ["relVolume", "Vol", "hidden xl:table-cell w-[70px]"],
                           ["pctFromHigh", "High", "hidden 2xl:table-cell w-[82px]"],
                           ["flowBias", "Flow", "hidden lg:table-cell w-[92px]"],
                         ].map(([key, label, className]) => (
@@ -588,8 +592,10 @@ export default function Home() {
                           <td className="hidden px-3 py-3 md:table-cell"><StatusBadge status={row.status} /></td>
                           <td className="hidden px-3 py-3 lg:table-cell">{row.stage}</td>
                           <td className="hidden truncate px-3 py-3 xl:table-cell">{row.trend}</td>
-                          <td className="hidden px-3 py-3 sm:table-cell">{row.rsRank}</td>
-                          <td className="hidden px-3 py-3 xl:table-cell">{row.relVolume.toFixed(2)}x</td>
+                          <td className="hidden px-3 py-3 sm:table-cell">
+                            <ScoreBadge value={formatRsRank(row.rsRank)} />
+                          </td>
+                          <td className="hidden whitespace-nowrap px-3 py-3 xl:table-cell">{formatRelVolume(row.relVolume)}</td>
                           <td className="hidden px-3 py-3 2xl:table-cell">{percent.format(row.pctFromHigh)}%</td>
                           <td className="hidden px-3 py-3 lg:table-cell">{row.flowBias}</td>
                         </tr>
@@ -717,7 +723,7 @@ function flattenImport(payload: unknown): TickerSummary[] {
         status,
         stage: String(snapshot.stage ?? "-"),
         trend: String(snapshot.trend ?? "-"),
-        rsRank: Number(snapshot.rs_rank ?? 0),
+        rsRank: normalizeRsRank(snapshot.rs_rank),
         relVolume: Number(snapshot.rel_volume ?? 0),
         pctFromHigh: normalizePercentValue(snapshot.pct_from_high),
         price: Number(snapshot.price ?? 0),
@@ -780,7 +786,7 @@ function normalizeCachedRow(value: unknown): TickerSummary | null {
     status: row.status === "TRADEABLE" ? "TRADEABLE" : "NOT TRADEABLE",
     stage: String(row.stage ?? "-"),
     trend: String(row.trend ?? "-"),
-    rsRank: Number(row.rsRank ?? 0),
+    rsRank: normalizeRsRank(row.rsRank),
     relVolume: Number(row.relVolume ?? 0),
     pctFromHigh: normalizePercentValue(row.pctFromHigh),
     price: Number(row.price ?? 0),
@@ -812,6 +818,21 @@ function normalizePercentValue(value: unknown) {
   const numeric = Number(value ?? 0);
   if (!Number.isFinite(numeric)) return 0;
   return Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+}
+
+function normalizeRsRank(value: unknown) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return numeric > 0 && numeric <= 1 ? numeric * 100 : numeric;
+}
+
+function formatRsRank(value: number) {
+  return compactNumber.format(Math.round(value * 10) / 10);
+}
+
+function formatRelVolume(value: number) {
+  if (!Number.isFinite(value)) return "-";
+  return `${compactNumber.format(value)}x`;
 }
 
 function normalizeHistory(value: unknown, key: string): number[] {
@@ -897,6 +918,14 @@ function StatusBadge({ status }: { status: Status }) {
   return (
     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${status === "TRADEABLE" ? "bg-[#dce8d7] text-[#31593d]" : "bg-[#f5ddd5] text-[#8a3a25]"}`}>
       {status}
+    </span>
+  );
+}
+
+function ScoreBadge({ value }: { value: string }) {
+  return (
+    <span className="inline-flex min-w-10 justify-center rounded bg-[#e6ece2] px-2 py-1 text-xs font-bold text-[#31593d]">
+      {value}
     </span>
   );
 }
