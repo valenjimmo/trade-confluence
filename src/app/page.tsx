@@ -384,6 +384,35 @@ export default function Home() {
               </h1>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <div
+                className="flex h-10 max-w-full items-center gap-2 rounded-md border border-dashed border-[#9ba892] bg-white px-2 text-sm"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const file = event.dataTransfer.files[0];
+                  if (file) void handleImport(file);
+                }}
+              >
+                <Upload className="shrink-0 text-[#55705f]" size={16} />
+                <span className="hidden max-w-48 truncate text-[#66706a] sm:inline">{importName}</span>
+                <input
+                  ref={fileInputRef}
+                  className="hidden"
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void handleImport(file);
+                  }}
+                />
+                <button
+                  className="inline-flex h-7 items-center gap-1 rounded bg-[#edf3ea] px-2 text-xs font-bold text-[#31593d] hover:bg-[#dce8d7]"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <FileJson size={13} />
+                  Import JSON
+                </button>
+              </div>
               <TickerInput value={selectedTicker} onChange={setSelectedTicker} />
               {userEmail ? (
                 <button
@@ -417,7 +446,9 @@ export default function Home() {
               </button>
             </div>
           </div>
-          {authError && <p className="text-sm font-medium text-[#a33d2f]">{authError}</p>}
+          {(authError || importError) && (
+            <p className="text-sm font-medium text-[#a33d2f]">{authError || importError}</p>
+          )}
           <nav className="flex flex-wrap gap-2">
             <TabButton active={activeTab === "list"} onClick={() => navigate("list")} icon={<FileJson size={16} />} label="Tradeable List" />
             <TabButton active={activeTab === "gex"} onClick={() => navigate("gex")} icon={<BarChart3 size={16} />} label="GEX / VEX Map" />
@@ -428,48 +459,66 @@ export default function Home() {
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         {activeTab === "list" && (
-          <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="space-y-5">
-              <div
-                className="flex min-h-28 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-[#9ba892] bg-[#fbfaf7] px-4 py-5 text-center"
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  const file = event.dataTransfer.files[0];
-                  if (file) void handleImport(file);
-                }}
-              >
-                <Upload className="text-[#55705f]" size={22} />
-                <div>
-                  <p className="text-sm font-semibold">{importName}</p>
-                  <p className="text-sm text-[#66706a]">Drop a trade-qualification-export/v1 JSON file here.</p>
-                </div>
-                <input
-                  ref={fileInputRef}
-                  className="hidden"
-                  type="file"
-                  accept="application/json,.json"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void handleImport(file);
-                  }}
-                />
-                <button
-                  className="inline-flex h-9 items-center gap-2 rounded-md border border-[#b8c1b3] bg-white px-3 text-sm font-semibold hover:bg-[#edf3ea]"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <FileJson size={15} />
-                  Choose JSON
-                </button>
-                {importError && <p className="text-sm font-medium text-[#a33d2f]">{importError}</p>}
-              </div>
-
+          <section className="space-y-5">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Metric label="Total scanned" value={metrics.total.toString()} icon={<Database size={18} />} />
                 <Metric label="Tradeable" value={metrics.tradeable.toString()} icon={<Flame size={18} />} />
                 <Metric label="Not tradeable" value={metrics.notTradeable.toString()} icon={<Activity size={18} />} />
                 <Metric label="Average score" value={metrics.avgScore.toFixed(1)} icon={<LineChart size={18} />} />
               </div>
+
+              <section className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">
+                {selectedRow ? (
+                  <div className="grid gap-4 lg:grid-cols-[280px_minmax(280px,1fr)_300px] lg:items-center">
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h2 className="text-2xl font-bold">{selectedRow.ticker}</h2>
+                          <p className="text-sm text-[#66706a]">{selectedRow.sector} / {selectedRow.industry}</p>
+                        </div>
+                        <StatusBadge status={selectedRow.status} />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <MiniStat label="Price" value={currency.format(selectedRow.price)} />
+                        <MiniStat label="Score" value={selectedRow.score.toString()} />
+                        <MiniStat label="RS rank" value={selectedRow.rsRank.toString()} />
+                        <MiniStat label="Flow bias" value={selectedRow.flowBias} />
+                      </div>
+                    </div>
+                    <div className="h-44 min-w-0">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={sparklineData} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
+                          <CartesianGrid stroke="#e4ded3" vertical={false} />
+                          <XAxis dataKey="index" hide />
+                          <YAxis hide domain={["dataMin", "dataMax"]} />
+                          <Tooltip />
+                          <Area type="monotone" dataKey="price" stroke="#55705f" fill="#dce8d7" strokeWidth={2} />
+                          <Line type="monotone" dataKey="rs" stroke="#b76742" strokeWidth={2} dot={false} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+                        <button className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#1f2933] px-3 text-sm font-semibold text-white" onClick={() => navigate("gex", selectedRow.ticker)}>
+                          <ExternalLink size={15} />
+                          View GEX/VEX map
+                        </button>
+                        <button className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#b8c1b3] bg-white px-3 text-sm font-semibold" onClick={() => navigate("backtest", selectedRow.ticker)}>
+                          <ExternalLink size={15} />
+                          Backtest this setup
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedRow.reasons.slice(0, 3).map((reason) => (
+                          <p key={reason} className="rounded-md bg-[#eeeae2] px-3 py-2 text-xs">{reason}</p>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-[#66706a]">Select a ticker to inspect its RS and price context.</p>
+                )}
+              </section>
 
               <div className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7]">
                 <div className="flex flex-col gap-4 border-b border-[#d7d2c8] p-4 lg:flex-row lg:items-center lg:justify-between">
@@ -549,56 +598,6 @@ export default function Home() {
                   </table>
                 </div>
               </div>
-            </div>
-
-            <aside className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">
-              {selectedRow ? (
-                <div className="space-y-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h2 className="text-2xl font-bold">{selectedRow.ticker}</h2>
-                      <p className="text-sm text-[#66706a]">{selectedRow.sector} / {selectedRow.industry}</p>
-                    </div>
-                    <StatusBadge status={selectedRow.status} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <MiniStat label="Price" value={currency.format(selectedRow.price)} />
-                    <MiniStat label="Score" value={selectedRow.score.toString()} />
-                    <MiniStat label="RS rank" value={selectedRow.rsRank.toString()} />
-                    <MiniStat label="Flow bias" value={selectedRow.flowBias} />
-                  </div>
-                  <div className="h-48">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={sparklineData} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
-                        <CartesianGrid stroke="#e4ded3" vertical={false} />
-                        <XAxis dataKey="index" hide />
-                        <YAxis hide domain={["dataMin", "dataMax"]} />
-                        <Tooltip />
-                        <Area type="monotone" dataKey="price" stroke="#55705f" fill="#dce8d7" strokeWidth={2} />
-                        <Line type="monotone" dataKey="rs" stroke="#b76742" strokeWidth={2} dot={false} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="space-y-2">
-                    {selectedRow.reasons.map((reason) => (
-                      <p key={reason} className="rounded-md bg-[#eeeae2] px-3 py-2 text-sm">{reason}</p>
-                    ))}
-                  </div>
-                  <div className="grid gap-2">
-                    <button className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#1f2933] px-3 text-sm font-semibold text-white" onClick={() => navigate("gex", selectedRow.ticker)}>
-                      <ExternalLink size={15} />
-                      View GEX/VEX map
-                    </button>
-                    <button className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#b8c1b3] bg-white px-3 text-sm font-semibold" onClick={() => navigate("backtest", selectedRow.ticker)}>
-                      <ExternalLink size={15} />
-                      Backtest this setup
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-[#66706a]">Select a ticker to inspect its RS and price context.</p>
-              )}
-            </aside>
           </section>
         )}
 
