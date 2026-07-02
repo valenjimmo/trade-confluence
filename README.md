@@ -24,6 +24,7 @@ GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 BULLFLOW_API_KEY=
 BULLFLOW_API_BASE_URL=https://api.bullflow.io/v1
+BULLFLOW_BACKTEST_AGGREGATE_URL=
 NEXT_PUBLIC_APP_URL=
 CRON_SECRET=
 ```
@@ -46,7 +47,7 @@ Do not add raw uploaded JSON, raw options flow streams, or raw per-strike GEX/VE
 ## Useful Routes
 
 - `/api/bullflow/gex-vex`: server-only Bullflow GEX/VEX proxy
-- `/api/bullflow/backtest`: server-only Bullflow backtest proxy and aggregate cache writer
+- `/api/bullflow/backtest`: server-only aggregate backtest proxy and cache writer. Bullflow's public API exposes SSE replay plus per-contract peak-return scoring; set `BULLFLOW_BACKTEST_AGGREGATE_URL` if you have a service that converts that replay into aggregated strike/DTE rows.
 - `/api/tickers/import-summary`: upserts flattened import summaries
 - `/api/cron/cleanup`: deletes expired cache rows, protected by `CRON_SECRET`
 - `/api/admin/db-size`: reports `pg_database_size()` through the `database_size_bytes()` RPC, protected by `CRON_SECRET`

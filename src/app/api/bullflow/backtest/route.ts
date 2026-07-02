@@ -22,6 +22,7 @@ export async function POST(request: Request) {
 
   const apiKey = process.env.BULLFLOW_API_KEY;
   const baseUrl = process.env.BULLFLOW_API_BASE_URL ?? "https://api.bullflow.io/v1";
+  const aggregateUrl = process.env.BULLFLOW_BACKTEST_AGGREGATE_URL;
 
   if (!apiKey) {
     return NextResponse.json(
@@ -30,21 +31,31 @@ export async function POST(request: Request) {
     );
   }
 
-  const upstream = await fetch(`${baseUrl}/backtest/peak-returns`, {
+  if (!aggregateUrl) {
+    return NextResponse.json(
+      {
+        error:
+          "Bullflow's public API exposes /streaming/backtesting SSE replay and /data/peakReturn contract scoring, not a ready-made aggregate strike/DTE backtest endpoint. Set BULLFLOW_BACKTEST_AGGREGATE_URL to a service that turns replayed alerts into aggregated rows.",
+      },
+      { status: 501 },
+    );
+  }
+
+  const upstream = await fetch(aggregateUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ ticker, setupType, dateFrom, dateTo }),
+    body: JSON.stringify({ ticker, setupType, dateFrom, dateTo, bullflowBaseUrl: baseUrl }),
     cache: "no-store",
   });
 
   const payload = await upstream.json().catch(() => ({}));
   if (!upstream.ok) {
     return NextResponse.json(
-      { error: payload.error ?? "Bullflow backtest request failed." },
+      { error: readError(payload) ?? `Backtest aggregate request failed with HTTP ${upstream.status}.` },
       { status: upstream.status },
     );
   }
@@ -53,6 +64,11 @@ export async function POST(request: Request) {
   await cacheAggregates(ticker, setupType, dateFrom, dateTo, rows);
 
   return NextResponse.json({ ticker, rows });
+}
+
+function readError(payload: unknown) {
+  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return record.error || record.message ? String(record.error ?? record.message) : null;
 }
 
 function normalizeRows(payload: Record<string, unknown>): BacktestRow[] {

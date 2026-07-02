@@ -143,6 +143,8 @@ const percent = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
 });
 
+const importedRowsStorageKey = "trade-confluence:imported-rows";
+
 export default function Home() {
   const initialQuery = getInitialQueryState();
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialQuery.tab);
@@ -171,6 +173,17 @@ export default function Home() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    window.setTimeout(() => {
+      const cached = readCachedRows();
+      if (!cached) return;
+      setRows(cached.rows);
+      setImportName(cached.importName);
+      setSelectedRow(cached.rows[0] ?? null);
+      if (cached.rows[0]) setSelectedTicker(cached.rows[0].ticker);
+    }, 0);
+  }, []);
 
   useEffect(() => {
     const supabase = getSupabaseBrowser();
@@ -265,6 +278,7 @@ export default function Home() {
       setSelectedRow(flattened[0]);
       setSelectedTicker(flattened[0].ticker);
       setImportName(file.name);
+      cacheRows(flattened, file.name);
       void fetch("/api/tickers/import-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -484,23 +498,23 @@ export default function Home() {
                     </label>
                   </div>
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[980px] text-left text-sm">
+                <div>
+                  <table className="w-full table-fixed text-left text-sm">
                     <thead className="bg-[#e9e5dc] text-xs uppercase text-[#56615b]">
                       <tr>
                         {[
-                          ["ticker", "Ticker"],
-                          ["sector", "Sector"],
-                          ["score", "Score"],
-                          ["status", "Status"],
-                          ["stage", "Stage"],
-                          ["trend", "Trend"],
-                          ["rsRank", "RS rank"],
-                          ["relVolume", "Rel vol"],
-                          ["pctFromHigh", "From high"],
-                          ["flowBias", "Flow"],
-                        ].map(([key, label]) => (
-                          <th key={key} className="px-3 py-3">
+                          ["ticker", "Ticker", "w-[76px]"],
+                          ["sector", "Sector", ""],
+                          ["score", "Score", "w-[72px]"],
+                          ["status", "Status", "hidden md:table-cell w-[116px]"],
+                          ["stage", "Stage", "hidden lg:table-cell w-[72px]"],
+                          ["trend", "Trend", "hidden xl:table-cell w-[106px]"],
+                          ["rsRank", "RS", "hidden sm:table-cell w-[72px]"],
+                          ["relVolume", "Vol", "hidden xl:table-cell w-[74px]"],
+                          ["pctFromHigh", "High", "hidden 2xl:table-cell w-[82px]"],
+                          ["flowBias", "Flow", "hidden lg:table-cell w-[92px]"],
+                        ].map(([key, label, className]) => (
+                          <th key={key} className={`px-3 py-3 ${className}`}>
                             <button className="inline-flex items-center gap-1 font-semibold" onClick={() => updateSort(key as SortKey)}>
                               {label}
                               <ArrowDownUp size={12} />
@@ -520,15 +534,15 @@ export default function Home() {
                           }}
                         >
                           <td className="px-3 py-3 font-bold">{row.ticker}</td>
-                          <td className="px-3 py-3">{row.sector || "Unclassified"}</td>
+                          <td className="truncate px-3 py-3">{row.sector || "Unclassified"}</td>
                           <td className="px-3 py-3 font-semibold">{row.score}</td>
-                          <td className="px-3 py-3"><StatusBadge status={row.status} /></td>
-                          <td className="px-3 py-3">{row.stage}</td>
-                          <td className="px-3 py-3">{row.trend}</td>
-                          <td className="px-3 py-3">{row.rsRank}</td>
-                          <td className="px-3 py-3">{row.relVolume.toFixed(2)}x</td>
-                          <td className="px-3 py-3">{percent.format(row.pctFromHigh)}%</td>
-                          <td className="px-3 py-3">{row.flowBias}</td>
+                          <td className="hidden px-3 py-3 md:table-cell"><StatusBadge status={row.status} /></td>
+                          <td className="hidden px-3 py-3 lg:table-cell">{row.stage}</td>
+                          <td className="hidden truncate px-3 py-3 xl:table-cell">{row.trend}</td>
+                          <td className="hidden px-3 py-3 sm:table-cell">{row.rsRank}</td>
+                          <td className="hidden px-3 py-3 xl:table-cell">{row.relVolume.toFixed(2)}x</td>
+                          <td className="hidden px-3 py-3 2xl:table-cell">{percent.format(row.pctFromHigh)}%</td>
+                          <td className="hidden px-3 py-3 lg:table-cell">{row.flowBias}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -706,7 +720,7 @@ function flattenImport(payload: unknown): TickerSummary[] {
         trend: String(snapshot.trend ?? "-"),
         rsRank: Number(snapshot.rs_rank ?? 0),
         relVolume: Number(snapshot.rel_volume ?? 0),
-        pctFromHigh: Number(snapshot.pct_from_high ?? 0),
+        pctFromHigh: normalizePercentValue(snapshot.pct_from_high),
         price: Number(snapshot.price ?? 0),
         flowBias: String(flow.bias ?? "Unknown"),
         reasons: Array.isArray(qualification.reasons) ? qualification.reasons.map(String) : [],
@@ -730,6 +744,54 @@ function extractImportEntries(payload: unknown): unknown[] {
   });
 }
 
+function readCachedRows(): { rows: TickerSummary[]; importName: string } | null {
+  try {
+    const raw = window.localStorage.getItem(importedRowsStorageKey);
+    if (!raw) return null;
+    const parsed = asRecord(JSON.parse(raw));
+    const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+    if (!rows.length) return null;
+    return {
+      rows: rows.map(normalizeCachedRow).filter(Boolean) as TickerSummary[],
+      importName: String(parsed.importName ?? "Cached import"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function cacheRows(rows: TickerSummary[], importName: string) {
+  try {
+    window.localStorage.setItem(importedRowsStorageKey, JSON.stringify({ rows, importName }));
+  } catch {
+    // The import still works in memory if browser storage is unavailable.
+  }
+}
+
+function normalizeCachedRow(value: unknown): TickerSummary | null {
+  const row = asRecord(value);
+  const ticker = String(row.ticker ?? "").toUpperCase();
+  if (!ticker) return null;
+
+  return {
+    ticker,
+    sector: String(row.sector ?? "Unclassified"),
+    industry: String(row.industry ?? "Unclassified"),
+    score: Number(row.score ?? 0),
+    status: row.status === "TRADEABLE" ? "TRADEABLE" : "NOT TRADEABLE",
+    stage: String(row.stage ?? "-"),
+    trend: String(row.trend ?? "-"),
+    rsRank: Number(row.rsRank ?? 0),
+    relVolume: Number(row.relVolume ?? 0),
+    pctFromHigh: normalizePercentValue(row.pctFromHigh),
+    price: Number(row.price ?? 0),
+    flowBias: String(row.flowBias ?? "Unknown"),
+    reasons: Array.isArray(row.reasons) ? row.reasons.map(String) : [],
+    priceHistory: Array.isArray(row.priceHistory) ? row.priceHistory.map(Number) : [],
+    rsHistory: Array.isArray(row.rsHistory) ? row.rsHistory.map(Number) : [],
+  };
+}
+
 function getInitialQueryState(): { tab: ActiveTab; ticker: string } {
   if (typeof window === "undefined") return { tab: "list", ticker: "NVDA" };
 
@@ -745,6 +807,12 @@ function getInitialQueryState(): { tab: ActiveTab; ticker: string } {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function normalizePercentValue(value: unknown) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
 }
 
 function normalizeHistory(value: unknown, key: string): number[] {
