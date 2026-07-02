@@ -4,7 +4,6 @@ import {
   Activity,
   ArrowDownUp,
   BarChart3,
-  CalendarRange,
   Database,
   ExternalLink,
   FileJson,
@@ -33,7 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 type Status = "TRADEABLE" | "NOT TRADEABLE";
-type ActiveTab = "list" | "gex" | "backtest";
+type ActiveTab = "list" | "gex" | "flow";
 
 type TickerSummary = {
   ticker: string;
@@ -59,12 +58,20 @@ type GexRow = {
   netVex: number;
 };
 
-type BacktestRow = {
-  strike: number;
-  dte: number;
-  winRate: number;
-  avgReturn: number;
-  sampleSize: number;
+type FlowAlert = {
+  id: string;
+  receivedAt: string;
+  ticker: string;
+  optionSymbol: string;
+  side: "CALL" | "PUT" | "UNKNOWN";
+  sentiment: "BULLISH" | "BEARISH" | "NEUTRAL";
+  strike: number | null;
+  expiration: string;
+  dte: number | null;
+  premium: number | null;
+  price: number | null;
+  size: number | null;
+  alertType: string;
 };
 
 type SortKey =
@@ -168,15 +175,17 @@ export default function Home() {
   const [gexPrice, setGexPrice] = useState<number | null>(null);
   const [gexLoading, setGexLoading] = useState(false);
   const [gexError, setGexError] = useState("");
-  const [backtestRows, setBacktestRows] = useState<BacktestRow[]>([]);
-  const [backtestLoading, setBacktestLoading] = useState(false);
-  const [backtestError, setBacktestError] = useState("");
-  const [setupType, setSetupType] = useState("stage-2-rs-high");
-  const [dateFrom, setDateFrom] = useState("2025-01-01");
-  const [dateTo, setDateTo] = useState("2026-06-30");
+  const [flowAlerts, setFlowAlerts] = useState<FlowAlert[]>([]);
+  const [flowConnected, setFlowConnected] = useState(false);
+  const [flowError, setFlowError] = useState("");
+  const [flowTickerFilter, setFlowTickerFilter] = useState("All");
+  const [flowSideFilter, setFlowSideFilter] = useState<"ALL" | "CALL" | "PUT">("ALL");
+  const [flowTradeableOnly, setFlowTradeableOnly] = useState(true);
+  const [flowMinPremium, setFlowMinPremium] = useState(0);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const flowSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     window.setTimeout(() => {
@@ -204,6 +213,12 @@ export default function Home() {
     return () => {
       mounted = false;
       data.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      flowSourceRef.current?.close();
     };
   }, []);
 
@@ -270,6 +285,44 @@ export default function Home() {
     return { putWall, callWall, flip };
   }, [gexRows, gexPrice]);
 
+  const tradeableTickerSet = useMemo(
+    () => new Set(rows.filter((row) => row.status === "TRADEABLE").map((row) => row.ticker)),
+    [rows],
+  );
+
+  const flowTickerOptions = useMemo(
+    () => ["All", ...Array.from(tradeableTickerSet).sort()],
+    [tradeableTickerSet],
+  );
+
+  const filteredFlowAlerts = useMemo(() => {
+    return flowAlerts
+      .filter((alert) => {
+        if (flowTradeableOnly && !tradeableTickerSet.has(alert.ticker)) return false;
+        if (flowTickerFilter !== "All" && alert.ticker !== flowTickerFilter) return false;
+        if (flowSideFilter !== "ALL" && alert.side !== flowSideFilter) return false;
+        if ((alert.premium ?? 0) < flowMinPremium) return false;
+        return true;
+      })
+      .map((alert) => ({
+        alert,
+        setup: rows.find((row) => row.ticker === alert.ticker) ?? null,
+      }))
+      .sort((a, b) => scoreFlowAlert(b.alert, b.setup) - scoreFlowAlert(a.alert, a.setup));
+  }, [flowAlerts, flowMinPremium, flowSideFilter, flowTickerFilter, flowTradeableOnly, rows, tradeableTickerSet]);
+
+  const flowStats = useMemo(() => {
+    const matches = filteredFlowAlerts.filter(({ setup }) => setup?.status === "TRADEABLE").length;
+    const bullish = filteredFlowAlerts.filter(({ alert }) => alert.sentiment === "BULLISH").length;
+    const bearish = filteredFlowAlerts.filter(({ alert }) => alert.sentiment === "BEARISH").length;
+    return {
+      alerts: filteredFlowAlerts.length,
+      matches,
+      bullish,
+      bearish,
+    };
+  }, [filteredFlowAlerts]);
+
   async function handleImport(file: File) {
     setImportError("");
     try {
@@ -327,29 +380,47 @@ export default function Home() {
     }
   }
 
-  async function runBacktest() {
-    setBacktestLoading(true);
-    setBacktestError("");
-    try {
-      const response = await fetch("/api/bullflow/backtest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ticker: selectedTicker,
-          setupType,
-          dateFrom,
-          dateTo,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Unable to run backtest.");
-      setBacktestRows(data.rows);
-    } catch (error) {
-      setBacktestError(error instanceof Error ? error.message : "Unable to run backtest.");
-      setBacktestRows([]);
-    } finally {
-      setBacktestLoading(false);
-    }
+  function startFlowStream() {
+    stopFlowStream();
+    setFlowError("");
+
+    const tickers = Array.from(tradeableTickerSet).join(",");
+    const params = new URLSearchParams();
+    if (tickers) params.set("tickers", tickers);
+
+    const source = new EventSource(`/api/bullflow/alerts/stream?${params.toString()}`);
+    flowSourceRef.current = source;
+
+    source.onopen = () => {
+      setFlowConnected(true);
+    };
+
+    source.onmessage = (event) => {
+      try {
+        const alert = JSON.parse(event.data) as FlowAlert;
+        setFlowAlerts((current) => [alert, ...current.filter((item) => item.id !== alert.id)].slice(0, 250));
+      } catch {
+        setFlowError("Received an unreadable Bullflow alert payload.");
+      }
+    };
+
+    source.addEventListener("status", (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { message?: string };
+      if (payload.message) setFlowError(payload.message);
+    });
+
+    source.onerror = () => {
+      setFlowConnected(false);
+      setFlowError("Flow stream disconnected. Check BULLFLOW_API_KEY or reconnect.");
+      source.close();
+      if (flowSourceRef.current === source) flowSourceRef.current = null;
+    };
+  }
+
+  function stopFlowStream() {
+    flowSourceRef.current?.close();
+    flowSourceRef.current = null;
+    setFlowConnected(false);
   }
 
   async function signInWithGoogle() {
@@ -443,10 +514,10 @@ export default function Home() {
               </button>
               <button
                 className="inline-flex h-10 items-center gap-2 rounded-md border border-[#b8c1b3] bg-white px-3 text-sm font-semibold text-[#1f2933] hover:bg-[#edf3ea]"
-                onClick={() => navigate("backtest")}
+                onClick={() => navigate("flow")}
               >
-                <CalendarRange size={16} />
-                Backtest
+                <Activity size={16} />
+                Flow
               </button>
             </div>
           </div>
@@ -456,7 +527,7 @@ export default function Home() {
           <nav className="flex flex-wrap gap-2">
             <TabButton active={activeTab === "list"} onClick={() => navigate("list")} icon={<FileJson size={16} />} label="Tradeable List" />
             <TabButton active={activeTab === "gex"} onClick={() => navigate("gex")} icon={<BarChart3 size={16} />} label="GEX / VEX Map" />
-            <TabButton active={activeTab === "backtest"} onClick={() => navigate("backtest")} icon={<LineChart size={16} />} label="Strike Backtester" />
+            <TabButton active={activeTab === "flow"} onClick={() => navigate("flow")} icon={<Activity size={16} />} label="Flow Monitor" />
           </nav>
         </div>
       </section>
@@ -507,9 +578,9 @@ export default function Home() {
                           <ExternalLink size={15} />
                           View GEX/VEX map
                         </button>
-                        <button className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#b8c1b3] bg-white px-3 text-sm font-semibold" onClick={() => navigate("backtest", selectedRow.ticker)}>
+                        <button className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#b8c1b3] bg-white px-3 text-sm font-semibold" onClick={() => navigate("flow", selectedRow.ticker)}>
                           <ExternalLink size={15} />
-                          Backtest this setup
+                          Watch live flow
                         </button>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -653,48 +724,89 @@ export default function Home() {
           </section>
         )}
 
-        {activeTab === "backtest" && (
+        {activeTab === "flow" && (
           <section className="space-y-5">
-            <PanelTitle icon={<CalendarRange size={18} />} title="Strike / expiration backtester" subtitle="Historical, not predictive. Every win rate and return statistic includes sample size." />
-            <div className="grid gap-3 rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4 md:grid-cols-5">
-              <TickerInput value={selectedTicker} onChange={setSelectedTicker} />
-              <select className="h-10 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" value={setupType} onChange={(event) => setSetupType(event.target.value)}>
-                <option value="stage-2-rs-high">Stage 2 + RS new high</option>
-                <option value="bullish-flow">Bullish flow bias</option>
-                <option value="pullback-leader">Pullback leader</option>
-              </select>
-              <input className="h-10 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
-              <input className="h-10 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
-              <button className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#1f2933] px-3 text-sm font-semibold text-white" onClick={runBacktest} disabled={backtestLoading}>
-                {backtestLoading ? <Loader2 className="animate-spin" size={16} /> : <Activity size={16} />}
-                Run
-              </button>
+            <PanelTitle icon={<Activity size={18} />} title="Live flow monitor" subtitle="Streams Bullflow alerts in memory and highlights flow that lines up with your imported tradeable list." />
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Metric label="Visible alerts" value={flowStats.alerts.toString()} icon={<Activity size={18} />} />
+              <Metric label="Tradeable matches" value={flowStats.matches.toString()} icon={<Flame size={18} />} />
+              <Metric label="Bullish flow" value={flowStats.bullish.toString()} icon={<LineChart size={18} />} />
+              <Metric label="Bearish flow" value={flowStats.bearish.toString()} icon={<Filter size={18} />} />
             </div>
-            {backtestError && <p className="rounded-md border border-[#e0b5aa] bg-[#fff4f1] px-3 py-2 text-sm font-medium text-[#a33d2f]">{backtestError}</p>}
-            <div className="overflow-x-auto rounded-lg border border-[#d7d2c8] bg-[#fbfaf7]">
-              <table className="w-full min-w-[720px] text-left text-sm">
+            <div className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7] p-4">
+              <div className="grid gap-3 lg:grid-cols-[160px_160px_1fr_auto] lg:items-center">
+                <select className="h-10 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" value={flowTickerFilter} onChange={(event) => setFlowTickerFilter(event.target.value)}>
+                  {flowTickerOptions.map((item) => <option key={item}>{item}</option>)}
+                </select>
+                <select className="h-10 rounded-md border border-[#c9c3b8] bg-white px-2 text-sm" value={flowSideFilter} onChange={(event) => setFlowSideFilter(event.target.value as "ALL" | "CALL" | "PUT")}>
+                  <option value="ALL">Calls and puts</option>
+                  <option value="CALL">Calls only</option>
+                  <option value="PUT">Puts only</option>
+                </select>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={flowTradeableOnly}
+                      onChange={(event) => setFlowTradeableOnly(event.target.checked)}
+                    />
+                    Imported tradeable tickers only
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <span className="whitespace-nowrap">Min premium {formatDollars(flowMinPremium)}</span>
+                    <input className="w-full accent-[#55705f]" type="range" min="0" max="1000000" step="25000" value={flowMinPremium} onChange={(event) => setFlowMinPremium(Number(event.target.value))} />
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`h-2.5 w-2.5 rounded-full ${flowConnected ? "bg-[#4f8a5f]" : "bg-[#b76742]"}`} />
+                  <button
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#1f2933] px-3 text-sm font-semibold text-white disabled:opacity-60"
+                    onClick={flowConnected ? stopFlowStream : startFlowStream}
+                  >
+                    {flowConnected ? "Disconnect" : "Connect"}
+                  </button>
+                </div>
+              </div>
+            </div>
+            {flowError && <p className="rounded-md border border-[#e0b5aa] bg-[#fff4f1] px-3 py-2 text-sm font-medium text-[#a33d2f]">{flowError}</p>}
+            <div className="rounded-lg border border-[#d7d2c8] bg-[#fbfaf7]">
+              <table className="w-full table-fixed text-left text-sm">
                 <thead className="bg-[#e9e5dc] text-xs uppercase text-[#56615b]">
                   <tr>
-                    <th className="px-3 py-3">Strike</th>
-                    <th className="px-3 py-3">DTE</th>
-                    <th className="px-3 py-3">Win rate with n</th>
-                    <th className="px-3 py-3">Average peak return with n</th>
-                    <th className="px-3 py-3">Sample size</th>
+                    <th className="w-[72px] px-3 py-3">Score</th>
+                    <th className="w-[82px] px-3 py-3">Ticker</th>
+                    <th className="hidden px-3 py-3 sm:table-cell">Contract</th>
+                    <th className="w-[86px] px-3 py-3">Side</th>
+                    <th className="hidden w-[92px] px-3 py-3 md:table-cell">Premium</th>
+                    <th className="hidden w-[78px] px-3 py-3 lg:table-cell">DTE</th>
+                    <th className="hidden w-[96px] px-3 py-3 xl:table-cell">RS</th>
+                    <th className="hidden w-[108px] px-3 py-3 xl:table-cell">Time</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#e4ded3]">
-                  {backtestRows.map((row) => (
-                    <tr key={`${row.strike}-${row.dte}`}>
-                      <td className="px-3 py-3 font-semibold">{row.strike}</td>
-                      <td className="px-3 py-3">{row.dte}</td>
-                      <td className="px-3 py-3">{percent.format(row.winRate)}% (n={row.sampleSize})</td>
-                      <td className="px-3 py-3">{percent.format(row.avgReturn)}% (n={row.sampleSize})</td>
-                      <td className="px-3 py-3">{row.sampleSize}</td>
+                  {filteredFlowAlerts.map(({ alert, setup }) => (
+                    <tr
+                      key={alert.id}
+                      className="cursor-pointer hover:bg-[#f0eee7]"
+                      onClick={() => {
+                        const row = rows.find((item) => item.ticker === alert.ticker);
+                        if (row) setSelectedRow(row);
+                        setSelectedTicker(alert.ticker);
+                      }}
+                    >
+                      <td className="px-3 py-3"><ScoreBadge value={scoreFlowAlert(alert, setup).toString()} /></td>
+                      <td className="px-3 py-3 font-bold">{alert.ticker}</td>
+                      <td className="hidden truncate px-3 py-3 sm:table-cell">{alert.optionSymbol || `${alert.expiration} ${alert.strike ?? ""}`}</td>
+                      <td className="px-3 py-3"><FlowSideBadge side={alert.side} sentiment={alert.sentiment} /></td>
+                      <td className="hidden px-3 py-3 md:table-cell">{formatDollars(alert.premium)}</td>
+                      <td className="hidden px-3 py-3 lg:table-cell">{alert.dte ?? "-"}</td>
+                      <td className="hidden px-3 py-3 xl:table-cell">{setup ? formatRsRank(setup.rsRank) : "-"}</td>
+                      <td className="hidden px-3 py-3 xl:table-cell">{formatTime(alert.receivedAt)}</td>
                     </tr>
                   ))}
-                  {!backtestRows.length && (
+                  {!filteredFlowAlerts.length && (
                     <tr>
-                      <td className="px-3 py-8 text-center text-[#66706a]" colSpan={5}>Run a historical backtest to populate aggregated rows.</td>
+                      <td className="px-3 py-8 text-center text-[#66706a]" colSpan={8}>Connect the stream to watch live Bullflow alerts for your imported tradeable tickers.</td>
                     </tr>
                   )}
                 </tbody>
@@ -803,9 +915,10 @@ function getInitialQueryState(): { tab: ActiveTab; ticker: string } {
   const params = new URLSearchParams(window.location.search);
   const tab = params.get("tab");
   const ticker = params.get("ticker");
+  const activeTab = tab === "backtest" ? "flow" : tab;
 
   return {
-    tab: tab === "gex" || tab === "backtest" || tab === "list" ? tab : "list",
+    tab: activeTab === "gex" || activeTab === "flow" || activeTab === "list" ? activeTab : "list",
     ticker: ticker ? ticker.toUpperCase() : "NVDA",
   };
 }
@@ -833,6 +946,32 @@ function formatRsRank(value: number) {
 function formatRelVolume(value: number) {
   if (!Number.isFinite(value)) return "-";
   return `${compactNumber.format(value)}x`;
+}
+
+function formatDollars(value: number | null) {
+  if (!value || !Number.isFinite(value)) return "-";
+  if (value >= 1000000) return `$${compactNumber.format(value / 1000000)}M`;
+  if (value >= 1000) return `$${compactNumber.format(value / 1000)}K`;
+  return currency.format(value);
+}
+
+function formatTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function scoreFlowAlert(alert: FlowAlert, setup: TickerSummary | null) {
+  let score = 0;
+  if (setup?.status === "TRADEABLE") score += 25;
+  if (setup) score += Math.min(25, setup.score / 4);
+  if (setup) score += Math.min(20, setup.rsRank / 5);
+  if (setup?.trend.toLowerCase().includes("up") || setup?.trend.toLowerCase().includes("improving")) score += 10;
+  if (alert.sentiment === "BULLISH" && setup?.flowBias.toUpperCase() !== "BEARISH") score += 10;
+  if (alert.sentiment === "BEARISH" && setup?.flowBias.toUpperCase() === "BEARISH") score += 10;
+  if ((alert.premium ?? 0) >= 250000) score += 5;
+  if ((alert.premium ?? 0) >= 1000000) score += 5;
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 function normalizeHistory(value: unknown, key: string): number[] {
@@ -926,6 +1065,21 @@ function ScoreBadge({ value }: { value: string }) {
   return (
     <span className="inline-flex min-w-10 justify-center rounded bg-[#e6ece2] px-2 py-1 text-xs font-bold text-[#31593d]">
       {value}
+    </span>
+  );
+}
+
+function FlowSideBadge({ side, sentiment }: { side: FlowAlert["side"]; sentiment: FlowAlert["sentiment"] }) {
+  const tone =
+    sentiment === "BULLISH"
+      ? "bg-[#dce8d7] text-[#31593d]"
+      : sentiment === "BEARISH"
+        ? "bg-[#f5ddd5] text-[#8a3a25]"
+        : "bg-[#eeeae2] text-[#56615b]";
+
+  return (
+    <span className={`inline-flex min-w-16 justify-center rounded-full px-2.5 py-1 text-xs font-bold ${tone}`}>
+      {side}
     </span>
   );
 }

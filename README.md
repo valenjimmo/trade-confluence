@@ -1,6 +1,6 @@
 # Trade Confluence
 
-Next.js App Router dashboard for RS-qualified tickers, Bullflow GEX/VEX maps, and aggregated strike/expiration backtests.
+Next.js App Router dashboard for RS-qualified tickers, Bullflow GEX/VEX maps, and live options-flow monitoring.
 
 ## Run Locally
 
@@ -24,7 +24,6 @@ GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 BULLFLOW_API_KEY=
 BULLFLOW_API_BASE_URL=https://api.bullflow.io/v1
-BULLFLOW_BACKTEST_AGGREGATE_URL=
 NEXT_PUBLIC_APP_URL=
 CRON_SECRET=
 ```
@@ -39,7 +38,6 @@ The schema intentionally persists only:
 
 - `tickers_latest`: one flattened row per ticker from imports
 - `user_watchlist`: tiny user-scoped saved watchlist/filter data
-- `backtest_results_cache`: aggregated result rows only
 - `flow_cache`: short-lived aggregate payloads only
 
 Do not add raw uploaded JSON, raw options flow streams, or raw per-strike GEX/VEX history tables. `vercel.json` runs `/api/cron/cleanup` daily to purge expired cache rows.
@@ -47,7 +45,7 @@ Do not add raw uploaded JSON, raw options flow streams, or raw per-strike GEX/VE
 ## Useful Routes
 
 - `/api/bullflow/gex-vex`: server-only Bullflow GEX/VEX proxy
-- `/api/bullflow/backtest`: server-only aggregate backtest proxy and cache writer. Bullflow's public API exposes SSE replay plus per-contract peak-return scoring; set `BULLFLOW_BACKTEST_AGGREGATE_URL` if you have a service that converts that replay into aggregated strike/DTE rows.
+- `/api/bullflow/alerts/stream`: server-only Bullflow SSE proxy for the Flow Monitor
 - `/api/tickers/import-summary`: upserts flattened import summaries
 - `/api/cron/cleanup`: deletes expired cache rows, protected by `CRON_SECRET`
 - `/api/admin/db-size`: reports `pg_database_size()` through the `database_size_bytes()` RPC, protected by `CRON_SECRET`
