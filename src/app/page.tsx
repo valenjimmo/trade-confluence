@@ -943,7 +943,7 @@ export default function Home() {
 }
 
 function flattenImport(payload: unknown): TickerSummary[] {
-  return extractImportEntries(payload)
+  const rows = extractImportEntries(payload)
     .map((entry) => {
       const item = asRecord(entry);
       const qualification = asRecord(item.qualification);
@@ -969,6 +969,8 @@ function flattenImport(payload: unknown): TickerSummary[] {
       };
     })
     .filter((row) => row.ticker);
+
+  return dedupeTickerRows(rows);
 }
 
 function extractImportEntries(payload: unknown): unknown[] {
@@ -992,7 +994,7 @@ function readCachedRows(): { rows: TickerSummary[]; importName: string } | null 
     const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
     if (!rows.length) return null;
     return {
-      rows: rows.map(normalizeCachedRow).filter(Boolean) as TickerSummary[],
+      rows: dedupeTickerRows(rows.map(normalizeCachedRow).filter(Boolean) as TickerSummary[]),
       importName: String(parsed.importName ?? "Cached import"),
     };
   } catch {
@@ -1006,6 +1008,14 @@ function cacheRows(rows: TickerSummary[], importName: string) {
   } catch {
     // The import still works in memory if browser storage is unavailable.
   }
+}
+
+function dedupeTickerRows(rows: TickerSummary[]) {
+  const byTicker = new Map<string, TickerSummary>();
+  for (const row of rows) {
+    byTicker.set(row.ticker, row);
+  }
+  return Array.from(byTicker.values());
 }
 
 function normalizeCachedRow(value: unknown): TickerSummary | null {
